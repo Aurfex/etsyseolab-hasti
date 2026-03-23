@@ -94,7 +94,8 @@ function base64URLEncode(buffer: Buffer) {
 }
 
 export default function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.query?.gate === '1') {
+  const requestUrl = new URL(req.url || '/', `https://${req.headers.host || 'localhost'}`);
+  if (requestUrl.searchParams.get('gate') === '1') {
     return handleAccessGate(req, res);
   }
 
