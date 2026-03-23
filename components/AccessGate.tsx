@@ -32,7 +32,6 @@ const AccessGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
   const handleUnlock = async (event: React.FormEvent) => {
     event.preventDefault();
-
     setError('');
 
     try {
@@ -120,15 +119,13 @@ const AccessGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             Enter the private build
           </button>
 
-          {isAccessEnabled ? (
-            <button
-              type="button"
-              onClick={handleClear}
-              className="w-full rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-medium text-white/75 transition hover:bg-white/10"
-            >
-              Clear this session
-            </button>
-          ) : null}
+          <button
+            type="button"
+            onClick={handleClear}
+            className="w-full rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-medium text-white/75 transition hover:bg-white/10"
+          >
+            Clear this session
+          </button>
         </form>
 
         <p className="mt-6 text-xs leading-5 text-white/45">
