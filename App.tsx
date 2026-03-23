@@ -27,6 +27,7 @@ import TermsOfServicePage from './pages/TermsOfServicePage';
 import ContactPage from './pages/ContactPage';
 import ShopifyExportPage from './pages/ShopifyExportPage';
 import SalesReportPage from './pages/SalesReportPage';
+import AccessGate from './components/AccessGate';
 
 const App: React.FC = () => {
   const { 
@@ -134,11 +135,13 @@ const App: React.FC = () => {
   }
 
   return (
-    <MainLayout>
-      {renderPage()}
-      <OptimoBot />
-      <Toast toast={toast} onClose={() => setToast(null)} />
-    </MainLayout>
+    <AccessGate>
+      <MainLayout>
+        {renderPage()}
+        <OptimoBot />
+        <Toast toast={toast} onClose={() => setToast(null)} />
+      </MainLayout>
+    </AccessGate>
   );
 };
 
