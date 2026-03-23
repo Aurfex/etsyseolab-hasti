@@ -17,7 +17,7 @@ function isLocalhost(host: string) {
 }
 
 function handleAccessGate(req: VercelRequest, res: VercelResponse) {
-  const accessKey = process.env.SITE_ACCESS_KEY;
+  const accessKey = (process.env.SITE_ACCESS_KEY ?? '').trim();
 
   if (!accessKey) {
     return res.status(200).json({ enabled: false, unlocked: true });
@@ -31,7 +31,7 @@ function handleAccessGate(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'POST') {
     const code = String(req.body?.code ?? '').trim();
 
-    if (code !== accessKey.trim()) {
+    if (code !== accessKey) {
       return res.status(401).json({ error: 'Invalid access code.' });
     }
 
@@ -76,18 +76,17 @@ function handleAccessGate(req: VercelRequest, res: VercelResponse) {
   return res.status(405).json({ error: 'Method Not Allowed' });
 }
 
-// Generate PKCE Code Verifier
 function generateCodeVerifier() {
   return base64URLEncode(crypto.randomBytes(32));
 }
 
-// Generate PKCE Code Challenge
 function generateCodeChallenge(verifier: string) {
   return base64URLEncode(crypto.createHash('sha256').update(verifier).digest());
 }
 
 function base64URLEncode(buffer: Buffer) {
-  return buffer.toString('base64')
+  return buffer
+    .toString('base64')
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
@@ -95,6 +94,7 @@ function base64URLEncode(buffer: Buffer) {
 
 export default function handler(req: VercelRequest, res: VercelResponse) {
   const requestUrl = new URL(req.url || '/', `https://${req.headers.host || 'localhost'}`);
+
   if (requestUrl.searchParams.get('gate') === '1') {
     return handleAccessGate(req, res);
   }
@@ -104,35 +104,43 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
   const state = crypto.randomBytes(16).toString('hex');
 
   const host = String(req.headers.host || '').toLowerCase();
-  const isLocalhost = host.includes('localhost') || host.startsWith('127.0.0.1');
-  const cookieAttrs = isLocalhost
-    ? 'Path=/; HttpOnly; SameSite=Lax; Max-Age=300'
-    : 'Path=/; HttpOnly; Secure; SameSite=None; Max-Age=300';
+  const isLocal = host.includes('localhost') || host.startsWith('127.0.0.1');
+  const cookieAttrs = isLocal
+    ? 'Path=/; HttpOnly; SameSite=Lax; Max-Age=3600'
+    : 'Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=3600';
 
-  // Prevent any intermediary caching on OAuth start endpoint
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
-  // Store verifier and state in cookies
   res.setHeader('Set-Cookie', [
-    `etsy_code_verifier=${codeVerifier}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=3600`,
-    `etsy_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=3600`
+    `etsy_code_verifier=${codeVerifier}; ${cookieAttrs}`,
+    `etsy_oauth_state=${state}; ${cookieAttrs}`,
   ]);
 
-  let scopes = process.env.ETSY_SCOPES || 'listings_r listings_w listings_d profile_r shops_r email_r';
-  if (!scopes.includes('transactions_r')) {
-    scopes += ' transactions_r';
-  }
-  const redirectUri = process.env.ETSY_REDIRECT_URI;
-  const clientId = process.env.ETSY_CLIENT_ID;
+  const rawScopes = (process.env.ETSY_SCOPES ?? 'listings_r listings_w listings_d profile_r shops_r email_r').trim();
+  const scopes = rawScopes.replace(/\s+/g, ' ').includes('transactions_r')
+    ? rawScopes.replace(/\s+/g, ' ')
+    : `${rawScopes.replace(/\s+/g, ' ')} transactions_r`;
+
+  const redirectUri = (process.env.ETSY_REDIRECT_URI ?? '').trim();
+  const clientId = (process.env.ETSY_CLIENT_ID ?? '').trim();
 
   if (!clientId || !redirectUri) {
-    return res.status(500).json({ error: 'Missing environment variables (ETSY_CLIENT_ID or ETSY_REDIRECT_URI)' });
+    return res.status(500).json({
+      error: 'Missing environment variables (ETSY_CLIENT_ID or ETSY_REDIRECT_URI)',
+    });
   }
 
-  const authUrl = `https://www.etsy.com/oauth/connect?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&code_challenge=${codeChallenge}&code_challenge_method=S256&state=${state}`;
+  const authUrl =
+    `https://www.etsy.com/oauth/connect?response_type=code` +
+    `&client_id=${encodeURIComponent(clientId)}` +
+    `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+    `&scope=${encodeURIComponent(scopes)}` +
+    `&code_challenge=${encodeURIComponent(codeChallenge)}` +
+    `&code_challenge_method=S256` +
+    `&state=${encodeURIComponent(state)}`;
 
   console.log('Redirecting to Etsy:', authUrl);
-  res.redirect(authUrl);
+  return res.redirect(authUrl);
 }
