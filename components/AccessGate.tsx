@@ -11,7 +11,7 @@ const AccessGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
     const checkAccess = async () => {
       try {
-        const response = await fetch('/api/access', { credentials: 'include' });
+        const response = await fetch('/api/auth/login?gate=1', { credentials: 'include' });
         const data = await response.json().catch(() => ({}));
         if (!isMounted) return;
         setIsUnlocked(Boolean(data.unlocked));
@@ -36,7 +36,7 @@ const AccessGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     setError('');
 
     try {
-      const response = await fetch('/api/access', {
+      const response = await fetch('/api/auth/login?gate=1', {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -58,7 +58,7 @@ const AccessGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   };
 
   const handleClear = () => {
-    fetch('/api/access', {
+    fetch('/api/auth/login?gate=1', {
       method: 'DELETE',
       credentials: 'include',
     }).finally(() => {
