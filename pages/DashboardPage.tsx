@@ -1,0 +1,585 @@
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Package, TrendingUp, Zap, Activity, FileText, Tag, Image as ImageIcon, Check, Info, AlertTriangle, AlertCircle, RefreshCw, DollarSign, Search, Flame, RotateCw, XCircle, Calendar, Clock } from 'lucide-react';
+import type { ElementType } from 'react';
+import { useAppContext } from '../contexts/AppContext';
+import { ActivityLog, Product } from '../types';
+import { useTranslation } from '../contexts/LanguageContext';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+
+interface MetricCardProps {
+  icon: ElementType;
+  title: string;
+  value: string;
+  change: string;
+  bgColor: string;
+  iconColor: string;
+}
+
+interface FixItem {
+    id: string;
+    listing_id: string;
+    imageUrl?: string;
+    original: { title: string; description: string; tags: string[]; score: number };
+    optimized: { title: string; description: string; tags: string[]; score: number };
+    status: 'pending' | 'saving' | 'saved' | 'failed' | 'optimizing';
+    targetEvent?: string; // NEW: optional field
+}
+
+
+const MetricCard: React.FC<MetricCardProps> = ({ icon: Icon, title, value, change, bgColor, iconColor }) => (
+  <div className={`p-5 rounded-2xl shadow-card dark:shadow-card-dark ${bgColor} border border-gray-100 dark:border-gray-800`}>
+    <div className="flex justify-between items-start">
+      <div className="flex flex-col">
+        <span className="text-sm text-gray-500 dark:text-gray-400">{title}</span>
+        <span className="text-3xl font-bold text-gray-900 dark:text-white mt-1">{value}</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400 mt-2">{change}</span>
+      </div>
+      <Icon className={`w-6 h-6 ${iconColor}`} />
+    </div>
+  </div>
+);
+
+const DashboardPage: React.FC = () => {
+    const { products, activityLogs, salesData, fetchSalesData, runAutopilotFix, runFullOptimization, showToast, auth, refreshProducts, setPage } = useAppContext();
+    const { t, language } = useTranslation();
+    const storeNiche = auth.user?.niche || 'Jewelry';
+
+    const [trends, setTrends] = useState<any[]>([]);
+    const [trendsLoading, setTrendsLoading] = useState(true);
+
+    useEffect(() => {
+        const loadTrends = async () => {
+            try {
+                const response = await fetch(`/api/trends?niche=${encodeURIComponent(storeNiche)}`);
+                if (!response.ok) throw new Error('Failed to fetch trends');
+                const data = await response.json();
+                if (data.trends && Array.isArray(data.trends)) {
+                    setTrends(data.trends);
+                }
+            } catch (err) {
+                console.error("Trends Error:", err);
+            } finally {
+                setTrendsLoading(false);
+            }
+        };
+        loadTrends();
+    }, [storeNiche]);
+
+    console.log("Dashboard Debug: Language is", language);
+
+    // State
+    const [isInitialLoading, setIsInitialLoading] = useState(true);
+    const [isFixing, setIsFixing] = useState(false);
+    const [fixList, setFixList] = useState<FixItem[]>([]);
+    const [fixProgress, setFixProgress] = useState<('pending' | 'loading' | 'done')[]>([]);
+    const [isScanning, setIsScanning] = useState(false);
+    const [priorityBatch, setPriorityBatch] = useState<Product[]>([]);
+    const [savedBatchIds, setSavedBatchIds] = useState<string[]>([]);
+    const [activeEventName, setActiveEventName] = useState<string | null>(null);
+
+    // Controlled loading state: stay in loading for at least 4 seconds to ensure thumbnails hydrate
+    useEffect(() => {
+        // We wait until products.length is greater than 5 to ensure we aren't seeing just the first fast-loaded items
+        if (products.length > 5) {
+            const timer = setTimeout(() => {
+                setIsInitialLoading(false);
+            }, 4000); 
+            return () => clearTimeout(timer);
+        } else {
+            setIsInitialLoading(true);
+        }
+    }, [products.length]);
+
+    // DEBUG: Force logs to see what's happening
+    console.log("Dashboard Render - Products:", products.length, "Loading:", isInitialLoading);
+
+    const handleScanProducts = useCallback(() => {
+        if (products.length === 0) return;
+        
+        setIsScanning(true);
+        setActiveEventName(null); // Clear active event for general scan
+        setTimeout(() => {
+            const worst = [...products]
+                .filter(p => p.title && !p.title.includes('Loading'))
+                .sort((a, b) => {
+                    const scoreA = a.seoScore + (a.tags.length * 2);
+                    const scoreB = b.seoScore + (b.tags.length * 2);
+                    return scoreA - scoreB;
+                })
+                .slice(0, 3);
+            
+            setPriorityBatch(worst);
+            setSavedBatchIds([]); 
+            setFixList([]); 
+            setIsScanning(false);
+            showToast({ type: 'success', message: 'Market Intelligence: 3 high-priority listings identified.' });
+        }, 1500);
+    }, [products, showToast]);
+
+    const canScan = useMemo(() => {
+        return products.length > 0 && !isScanning && !isFixing && priorityBatch.length === 0;
+    }, [products.length, isScanning, isFixing, priorityBatch.length]);
+
+    const healthData = useMemo(() => {
+        if (products.length === 0 || priorityBatch.length === 0 || (savedBatchIds.length === priorityBatch.length)) {
+             return { grade: '-', issues: 0, missingTags: 0, lowSeo: 0, scorePercent: 0, summaries: [], allDone: savedBatchIds.length === priorityBatch.length && priorityBatch.length > 0 };
+        }
+        
+        let batchTotalScore = 0;
+        let batchIssues = 0;
+        const summaries: { id: string; text: string; status: 'warning' | 'success'; title: string }[] = [];
+        
+        priorityBatch.forEach((p) => {
+            const isSaved = savedBatchIds.includes(p.id);
+            if (isSaved) {
+                batchTotalScore += 98;
+            } else {
+                const currentP = products.find(prod => prod.id === p.id) || p;
+                batchTotalScore += Math.max(15, Math.min(45, currentP.seoScore));
+                
+                const issues = [];
+                if (currentP.tags.length < 13) { batchIssues++; issues.push(`${13 - currentP.tags.length} tags missing`); }
+                if (currentP.title.length < 70) issues.push("Short title");
+                
+                const shortTitle = p.title.length > 25 ? p.title.substring(0, 25) + '...' : p.title;
+                summaries.push({ id: p.id, title: shortTitle, text: issues.length > 0 ? issues.join(', ') : 'Needs SEO boost', status: 'warning' });
+                if (currentP.seoScore < 70) batchIssues++;
+            }
+        });
+
+        const avgScore = batchTotalScore / priorityBatch.length;
+        let grade = 'F';
+        if (avgScore >= 90) grade = 'A+';
+        else if (avgScore >= 80) grade = 'A';
+        else if (avgScore >= 70) grade = 'B';
+        else if (avgScore >= 55) grade = 'C';
+        else if (avgScore >= 40) grade = 'D';
+        
+        return { grade, issues: batchIssues, missingTags: batchIssues, lowSeo: batchIssues, scorePercent: avgScore, summaries, allDone: false };
+    }, [priorityBatch, savedBatchIds, products]);
+
+    const healthScore = isScanning ? '...' : healthData.grade;
+    const batchSeoScoreDisplay = (isScanning || healthData.grade === '-') ? 0 : Math.round(healthData.scorePercent);
+
+    const revenueData = useMemo(() => {
+        return salesData && salesData.recent_orders.length > 0
+            ? [...salesData.recent_orders].reverse().map(order => ({
+                name: new Date(order.date).toLocaleDateString(undefined, { weekday: 'short' }),
+                actual: order.total,
+                missed: order.total * 1.4
+            }))
+            : [
+                { name: 'Mon', actual: 120, missed: 400 },
+                { name: 'Tue', actual: 180, missed: 420 },
+                { name: 'Wed', actual: 150, missed: 450 },
+                { name: 'Thu', actual: 200, missed: 500 },
+                { name: 'Fri', actual: 250, missed: 520 },
+                { name: 'Sat', actual: 300, missed: 600 },
+                { name: 'Sun', actual: 280, missed: 650 },
+            ];
+    }, [salesData]);
+
+    const optimizeItem = async (p: Product, eventName?: string): Promise<FixItem | null> => {
+        try {
+            // Updated optimization call with optional eventName
+            const optResult = await runFullOptimization(p, eventName);
+            return {
+                id: p.id, listing_id: p.id, imageUrl: p.imageUrl,
+                original: { title: p.title, description: p.description, tags: p.tags, score: p.seoScore },
+                optimized: { title: optResult.title, description: optResult.description, tags: optResult.tags || p.tags, score: Math.min(100, p.seoScore + 25) },
+                status: 'pending',
+                targetEvent: eventName
+            };
+        } catch (err) {
+            console.error('Failed to optimize', p.id, err);
+            return null;
+        }
+    };
+
+    const handleFixAll = async () => {
+        if (priorityBatch.length === 0) return;
+        setIsFixing(true);
+        setFixList([]);
+        const remainingToFix = priorityBatch.filter(p => !savedBatchIds.includes(p.id));
+        setFixProgress(remainingToFix.map(() => 'pending'));
+        const newFixes: FixItem[] = [];
+        for (let i = 0; i < remainingToFix.length; i++) {
+            setFixProgress(prev => prev.map((s, idx) => idx === i ? 'loading' : s));
+            if (i > 0) await new Promise(resolve => setTimeout(resolve, 4000));
+            // PASS THE ACTIVE EVENT NAME HERE
+            const result = await optimizeItem(remainingToFix[i], activeEventName || undefined);
+            if (result) {
+                newFixes.push(result);
+                setFixProgress(prev => prev.map((s, idx) => idx === i ? 'done' : s));
+            } else {
+                setFixProgress(prev => prev.map((s, idx) => idx === i ? 'pending' : s));
+            }
+        }
+        if (newFixes.length > 0) { setFixList(newFixes); showToast({ type: 'success', message: 'AI Analysis complete!' }); }
+        else { showToast({ type: 'error', message: 'Analysis failed.' }); }
+        setIsFixing(false);
+    };
+
+    const handleRegenerate = async (item: FixItem) => {
+        setFixList(prev => prev.map(f => f.id === item.id ? { ...f, status: 'optimizing' } : f));
+        const p = products.find(prod => prod.id === item.id);
+        if (!p) return;
+        const result = await optimizeItem(p, activeEventName || undefined);
+        if (result) { setFixList(prev => prev.map(f => f.id === item.id ? result : f)); }
+        else { setFixList(prev => prev.map(f => f.id === item.id ? { ...f, status: 'failed' } : f)); }
+    };
+
+    const handleCancelFix = (item: FixItem) => { setFixList(prev => prev.filter(f => f.id !== item.id)); };
+
+    const handleSaveFix = async (item: FixItem) => {
+        setFixList(prev => prev.map(f => f.id === item.id ? { ...f, status: 'saving' } : f));
+        try {
+            const token = auth.token || sessionStorage.getItem('etsy_token');
+            if (!token) throw new Error('Unauthorized: No token found');
+            const response = await fetch('/api/etsy-update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+                body: JSON.stringify({ listing_id: item.listing_id, payload: { title: item.optimized.title, description: item.optimized.description, tags: item.optimized.tags } })
+            });
+            const resData = await response.json();
+            if (!response.ok) throw new Error(resData.error || 'Update failed');
+            showToast({ type: 'success', message: 'Saved successfully to Etsy!' });
+            setSavedBatchIds(prev => [...prev, item.id]);
+            setFixList(prev => prev.filter(f => f.id !== item.id));
+            setTimeout(() => refreshProducts(), 500);
+        } catch (error: any) {
+            console.error('Save failed:', error);
+            setFixList(prev => prev.map(f => f.id === item.id ? { ...f, status: 'failed' } : f));
+            showToast({ type: 'error', message: 'Failed: ' + error.message });
+        }
+    };
+
+    useEffect(() => { if (auth.isAuthenticated) fetchSalesData(); }, [auth.isAuthenticated]);
+
+    const optimizationsToday = activityLogs.filter(log => 
+        log.timestamp.toDateString() === new Date().toDateString() &&
+        (log.type === 'title_optimization' || log.type === 'tag_enhancement' || log.type === 'description_rewrite' || log.type === 'image_optimization')
+    ).length;
+
+    const avgSeoScoreDisplay = useMemo(() => {
+        return products.length > 0 
+            ? Math.round(products.reduce((acc, p) => acc + p.seoScore, 0) / products.length)
+            : 0;
+    }, [products]);
+
+    const isBatchActive = priorityBatch.length > 0 && !healthData.allDone;
+
+    const salesEvents = useMemo(() => {
+        const now = new Date();
+        const events = [
+            { name: "Mother's Day", date: new Date(now.getFullYear(), 4, 11), range: "May 1 - May 11", niche: "Jewelry Gifts" },
+            { name: "Wedding Season Peak", date: new Date(now.getFullYear(), 5, 1), range: "June 1 - Aug 31", niche: "Bridal Jewelry" },
+            { name: "Father's Day", date: new Date(now.getFullYear(), 5, 15), range: "June 1 - June 15", niche: "Men's Jewelry" },
+            { name: "Summer Solstice", date: new Date(now.getFullYear(), 5, 21), range: "June 21", niche: "Boho Jewelry" },
+            { name: "Christmas in July", date: new Date(now.getFullYear(), 6, 25), range: "July 1 - July 25", niche: "Early Holiday Sales" },
+        ].map(event => {
+            const diff = event.date.getTime() - now.getTime();
+            const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
+            return { ...event, daysRemaining: days };
+        }).filter(e => e.daysRemaining > 0).sort((a, b) => a.daysRemaining - b.daysRemaining);
+        
+        return events.slice(0, 5);
+    }, []);
+
+    const handleOptimizeForEvent = useCallback((event: { name: string; niche: string }) => {
+        showToast({ 
+            type: 'info', 
+            message: `Hasti AI: Preparing strategic ${event.niche} SEO batch for ${event.name}...` 
+        });
+        
+        setActiveEventName(event.name); // Set the active event context
+        
+        // Find products matching the niche
+        const targetKeywords = event.niche.toLowerCase().split(' ');
+        const matches = products.filter(p => 
+            p.title.toLowerCase().includes(targetKeywords[0]) || 
+            (targetKeywords[1] && p.title.toLowerCase().includes(targetKeywords[1])) ||
+            p.description.toLowerCase().includes(targetKeywords[0])
+        ).slice(0, 3);
+
+        if (matches.length > 0) {
+            setPriorityBatch(matches);
+            setSavedBatchIds([]);
+            setFixList([]);
+            // SCROLL TO TOP so user sees the Priority Batch section
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            showToast({ type: 'success', message: `Found ${matches.length} relevant listings for ${event.name}. Check the Priority Batch above!` });
+        } else {
+            handleScanProducts();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    }, [products, showToast, handleScanProducts]);
+
+    return (
+        <div className="space-y-8 animate-fade-in w-full h-full min-h-[400px]">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center">
+                <div className="flex items-center gap-6">
+                    <div>
+                        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">{t('dashboard_title')}</h1>
+                        <p className="text-gray-500 dark:text-gray-400 mt-1">SEO Intelligence Center v2.8</p>
+                    </div>
+                    
+                    {/* Top-Level Sync Status Indicator */}
+                    {isInitialLoading ? (
+                        <div className="flex items-center gap-2 px-4 py-2 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-xl shadow-sm animate-pulse-subtle">
+                            <RefreshCw className="w-5 h-5 text-blue-500 animate-spin" />
+                            <span className="text-sm font-bold text-blue-700 dark:text-blue-300 tracking-wide uppercase">Syncing Store Data...</span>
+                        </div>
+                    ) : (
+                        <div className="flex items-center gap-2 px-4 py-2 bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800 rounded-xl shadow-sm animate-fade-in">
+                            <Check className="w-5 h-5 text-green-500" />
+                            <span className="text-sm font-bold text-green-700 dark:text-green-300 tracking-wide uppercase">Sync Complete</span>
+                        </div>
+                    )}
+                </div>
+                <div className="flex items-center gap-2 mt-4 sm:mt-0">
+                    <button className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-green-700 dark:text-green-300 bg-green-100 dark:bg-green-500/10 rounded-full">
+                        <span className="relative flex h-2 w-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span></span>
+                        AI ACTIVE
+                    </button>
+                </div>
+            </div>
+
+            <div className="relative overflow-hidden bg-white dark:bg-gray-800 p-8 rounded-3xl shadow-card border border-gray-100 dark:border-gray-700">
+                <div className={"absolute -top-24 -right-24 w-96 h-96 rounded-full mix-blend-multiply filter blur-3xl opacity-20 " + (isBatchActive ? (healthScore.startsWith('A') ? 'bg-green-400' : 'bg-purple-400') : 'bg-gray-400')}></div>
+                <div className="relative z-10 flex flex-col lg:flex-row gap-8 items-center">
+                    <div className="flex-shrink-0">
+                        <div className="relative w-40 h-40 flex items-center justify-center">
+                            <svg className="w-full h-full transform -rotate-90">
+                                <circle cx="80" cy="80" r="70" className="stroke-current text-gray-200 dark:text-gray-700" strokeWidth="12" fill="transparent" />
+                                <circle cx="80" cy="80" r="70" className={"stroke-current transition-all duration-1000 " + (isBatchActive ? (healthScore.startsWith('A') ? 'text-green-500' : 'text-[#F1641E]') : 'text-gray-300')} strokeWidth="12" fill="transparent" strokeDasharray="440" strokeDashoffset={440 - (440 * (Math.max(0, batchSeoScoreDisplay || 0) / 100))} strokeLinecap="round" />
+                            </svg>
+                            <div className="absolute flex flex-col items-center justify-center">
+                                <span className="text-sm font-medium text-gray-500 dark:text-gray-400">Score</span>
+                                <span className={"text-5xl font-black " + (isBatchActive ? (healthScore.startsWith('A') ? 'text-green-500' : 'text-[#F1641E]') : 'text-gray-300')}>{healthScore}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex-grow w-full">
+                        <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">{isScanning ? 'Deep Analysis...' : (!isBatchActive ? 'Market Intelligence Idle' : 'Priority Batch Status')}</h2>
+                        <div className="space-y-3">
+                            {isBatchActive && !isScanning && healthData.summaries.map((summary, idx) => (
+                                <div key={idx} className="flex items-center p-3 rounded-xl border bg-gray-50 dark:bg-gray-900/40 border-gray-100 dark:border-gray-800 animate-slide-in">
+                                    <div className="flex items-center w-full">
+                                        <AlertTriangle className="w-5 h-5 text-amber-500 mr-3" />
+                                        <span className="text-sm text-gray-700 dark:text-gray-300">
+                                            <span className="text-orange-500 font-semibold mr-2">[{summary.title}]</span> 
+                                            {summary.text}
+                                        </span>
+                                    </div>
+                                </div>
+                            ))}
+                            {!isBatchActive && !isScanning && (
+                                <div className="p-4 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-2xl flex flex-col items-center justify-center text-gray-400">
+                                    <Search className="w-8 h-8 mb-2 opacity-20" />
+                                    <p className="text-sm">Click SCAN to identify 2026 SEO opportunities</p>
+                                </div>
+                            )}
+                            {isScanning && (
+                                <>
+                                    <div className="flex items-center p-3 rounded-xl border bg-gray-50 dark:bg-gray-900/40 border-gray-100 dark:border-gray-800">
+                                        <AlertTriangle className="w-5 h-5 text-amber-500 mr-3 animate-pulse" /><span className="text-sm text-gray-700 dark:text-gray-300">Searching listings for SEO gaps...</span>
+                                    </div>
+                                    <div className="flex items-center p-3 rounded-xl border bg-gray-50 dark:bg-gray-900/40 border-gray-100 dark:border-gray-800">
+                                        <Zap className="w-5 h-5 text-[#F1641E] mr-3 animate-bounce" /><span className="text-sm text-gray-700 dark:text-gray-300">Applying 2026 Etsy Standards...</span>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                    <div className="flex-shrink-0 w-full lg:w-auto flex flex-col items-center gap-4">
+                        {(isFixing || fixProgress.length > 0) && (
+                            <div className="flex gap-2 mb-2">
+                                {fixProgress.map((status, i) => (
+                                    <div key={i} className={"w-4 h-4 rounded-md transition-all duration-500 " + (status === 'done' ? 'bg-green-500 scale-110' : status === 'loading' ? 'bg-orange-500 animate-pulse' : 'bg-gray-200 dark:bg-gray-700')}></div>
+                                ))}
+                            </div>
+                        )}
+                        <button onClick={handleScanProducts} disabled={!canScan} className="w-full lg:w-64 py-3 px-6 rounded-2xl font-bold text-[#F1641E] border-2 border-[#F1641E] hover:bg-[#F1641E] hover:text-white transition-all active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                            {isScanning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                            SCAN PRODUCTS
+                        </button>
+                        <button onClick={handleFixAll} disabled={isFixing || isScanning || !isBatchActive} className="w-full lg:w-64 py-4 px-6 rounded-2xl font-bold text-white shadow-lg bg-[#F1641E] hover:bg-[#D95A1B] disabled:bg-gray-400 transition-all active:scale-95">
+                            {isFixing ? <RefreshCw className="w-5 h-5 animate-spin mx-auto" /> : `✨ FIX ${priorityBatch.length - savedBatchIds.length} PRIORITY ITEMS`}
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            {fixList.length > 0 && (
+                <div className="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-xl border border-purple-200 dark:border-purple-800/50 animate-fade-in">
+                    <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-6 flex items-center"><Zap className="w-6 h-6 mr-2 text-[#F1641E]" /> AI Batch SEO Review</h3>
+                    <div className="space-y-6">
+                        {fixList.map(item => (
+                            <div key={item.id} className="p-5 rounded-2xl border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30 flex flex-col gap-4 relative">
+                                {item.status === 'optimizing' && <div className="absolute inset-0 bg-white/60 dark:bg-gray-900/60 z-20 flex items-center justify-center backdrop-blur-sm rounded-2xl"><RefreshCw className="w-8 h-8 text-[#F1641E] animate-spin" /></div>}
+                                <div className="flex flex-col md:flex-row gap-6">
+                                    <div className="w-32 h-32 flex-shrink-0 rounded-xl overflow-hidden border border-gray-200 shadow-sm bg-white">
+                                        <img src={item.imageUrl || 'https://via.placeholder.com/150'} className="w-full h-full object-contain" alt="" />
+                                    </div>
+                                    <div className="flex-grow grid grid-cols-1 lg:grid-cols-2 gap-8">
+                                        <div className="space-y-2 opacity-70">
+                                            <span className="text-[10px] font-bold text-red-500 uppercase px-2 py-0.5 bg-red-50 dark:bg-red-900/20 rounded">BEFORE ({item.original.score}%)</span>
+                                            <p className="text-sm font-bold text-gray-800 dark:text-gray-200 line-clamp-1">{item.original.title}</p>
+                                            <div className="flex flex-wrap gap-1">
+                                                {item.original.tags.slice(0, 5).map(t => <span key={'b'+t} className="text-[10px] bg-gray-200 dark:bg-gray-700 px-1.5 py-0.5 rounded">{t}</span>)}
+                                            </div>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <div className="flex justify-between items-center">
+                                                <span className="text-[10px] font-bold text-green-500 uppercase px-2 py-0.5 bg-green-50 dark:bg-green-900/20 rounded">AFTER (EST. {item.optimized.score}%)</span>
+                                                <span className="text-[10px] font-bold text-green-600">+{item.optimized.score - item.original.score}%</span>
+                                            </div>
+                                            <p className="text-sm font-bold text-gray-900 dark:text-white line-clamp-2">{item.optimized.title}</p>
+                                            <div className="flex flex-wrap gap-1">
+                                                {item.optimized.tags.slice(0, 10).map(t => <span key={'a'+t} className="text-[10px] bg-green-100 dark:bg-green-900/40 text-green-700 px-1.5 py-0.5 rounded border border-green-200 font-medium">{t}</span>)}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="flex justify-end items-center gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
+                                    <button onClick={() => handleCancelFix(item)} className="p-2 text-gray-400 hover:text-red-500 transition-colors"><XCircle className="w-5 h-5" /></button>
+                                    <button onClick={() => handleRegenerate(item)} className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-[#F1641E] dark:text-purple-400 hover:bg-orange-50 dark:hover:bg-purple-900/20 rounded-xl transition-all"><RotateCw className="w-4 h-4" /> Regenerate</button>
+                                    <button onClick={() => handleSaveFix(item)} disabled={item.status === 'saving'} className="flex items-center gap-2 px-6 py-2.5 bg-green-600 hover:bg-green-700 text-white text-sm font-bold rounded-xl shadow-lg disabled:bg-gray-400 transition-all">
+                                        {item.status === 'saving' ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                                        Save to Etsy
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="col-span-1 lg:col-span-2 bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-card border border-gray-100 dark:border-gray-700 min-h-[300px]">
+                    <div className="flex items-center justify-between mb-6">
+                        <div className="flex items-center gap-3">
+                            <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-orange-100 dark:bg-orange-900/30 text-orange-600">
+                                <Clock className="w-5 h-5 animate-pulse" />
+                            </span>
+                            <div>
+                                <h3 className="text-lg font-bold text-gray-900 dark:text-white">{t('dash_sales_countdown_title')}</h3>
+                                <p className="text-[10px] text-gray-400 font-medium">{new Date().toLocaleDateString(language === 'fr' ? 'fr-FR' : 'en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                            </div>
+                        </div>
+                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400 flex items-center gap-1">
+                            <Info className="w-3 h-3" />
+                            {t('dash_global_markets')}
+                        </span>
+                    </div>
+
+                    <div className="flex flex-col gap-4">
+                        {salesEvents.map((event, idx) => (
+                            <div key={idx} className="group relative overflow-hidden p-4 rounded-2xl bg-white dark:bg-gray-800 shadow-card dark:shadow-card-dark border border-gray-100 dark:border-gray-700 hover:border-orange-200 dark:hover:border-orange-800/50 transition-all flex items-center justify-between">
+                                <div className="flex items-center gap-4">
+                                    <div className="flex flex-col items-center justify-center w-12 h-12 rounded-xl bg-orange-50 dark:bg-orange-900/20 border border-orange-100 dark:border-orange-800">
+                                        <Calendar className="w-5 h-5 text-orange-500" />
+                                    </div>
+                                    <div>
+                                        <div className="flex items-center gap-2">
+                                            <h4 className="font-bold text-gray-900 dark:text-white leading-none">{event.name}</h4>
+                                            <span className="px-2 py-0.5 rounded-md bg-orange-100 dark:bg-orange-900/30 text-orange-600 text-[9px] font-black uppercase tracking-tighter">{event.niche}</span>
+                                        </div>
+                                        <p className="text-[10px] text-gray-400 mt-1 font-medium">{event.range}</p>
+                                    </div>
+                                </div>
+                                
+                                <div className="flex items-center gap-6">
+                                    <div className="text-right">
+                                        <div className="flex items-baseline gap-1">
+                                            <span className="text-2xl font-black text-orange-600 leading-none">{event.daysRemaining}</span>
+                                            <span className="text-[10px] font-bold text-gray-400 uppercase">{t('dash_days_left')}</span>
+                                        </div>
+                                        <div className="w-16 h-1 bg-gray-100 dark:bg-gray-700 rounded-full mt-1.5 overflow-hidden">
+                                            <div className="h-full bg-orange-500 rounded-full transition-all duration-1000" style={{ width: `${Math.max(10, 100 - (event.daysRemaining / 2))}%` }}></div>
+                                        </div>
+                                    </div>
+                                    <button 
+                                        onClick={() => handleOptimizeForEvent(event)}
+                                        className="px-5 py-2.5 bg-gray-900 dark:bg-white text-white dark:text-gray-900 text-[10px] font-black rounded-xl hover:scale-105 active:scale-95 transition-all shadow-md shadow-gray-200 dark:shadow-none uppercase"
+                                    >
+                                        {t('dash_optimize_btn')}
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                <div className="col-span-1 flex flex-col gap-6">
+                    <div className="bg-gradient-to-br from-[#FAFAFA] to-[#F0F0F0] dark:from-[#1E1E1E] dark:to-[#2D2D2D] p-6 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm h-full flex flex-col">
+                        <div className="flex items-center gap-3 mb-3"><span className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300"><Search className="w-4 h-4" /></span><h3 className="font-bold text-gray-900 dark:text-white">{t('dash_radar_title')}</h3></div>
+                        <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed mb-4">3 Top competitors in <b>{storeNiche}</b> recently updated their tags. Check your rank now.</p>
+                        <button onClick={() => setPage('competitor')} className="w-full py-2 bg-[#F1641E] hover:bg-[#D95A1B] text-white text-sm font-semibold rounded-xl transition-colors mt-auto">{t('dash_radar_btn')}</button>
+                    </div>
+
+                    <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-card border border-gray-100 dark:border-gray-700 h-full">
+                        <div className="flex items-center gap-3 mb-6"><span className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400"><Flame className="w-4 h-4" /></span><h3 className="font-bold text-gray-900 dark:text-white">{t('dash_trending_keywords')}</h3></div>
+                        {trendsLoading ? (
+                            <div className="flex justify-center items-center h-40">
+                                <RotateCw className="w-6 h-6 animate-spin text-orange-500" />
+                            </div>
+                        ) : trends.length > 0 ? (
+                            <ul className="space-y-6">
+                                {trends.map((trend, idx) => (
+                                    <li key={idx} className="flex justify-between items-center group/item">
+                                        <div className="flex flex-col">
+                                            <span className="text-sm font-bold text-gray-700 dark:text-gray-300">{idx + 1}. {trend.keyword}</span>
+                                            <span className="text-[10px] text-gray-400">{trend.volume}</span>
+                                        </div>
+                                        <span className="text-xs text-green-500 font-black">{trend.growth}</span>
+                                    </li>
+                                ))}
+                            </ul>
+                        ) : (
+                            <ul className="space-y-6">
+                                <li className="flex justify-between items-center group/item"><div className="flex flex-col"><span className="text-sm font-bold text-gray-700 dark:text-gray-300">1. Art Deco {storeNiche}</span><span className="text-[10px] text-gray-400">High Volume</span></div><span className="text-xs text-green-500 font-black">+156%</span></li>
+                                <li className="flex justify-between items-center group/item"><div className="flex flex-col"><span className="text-sm font-bold text-gray-700 dark:text-gray-300">2. Custom 14K Gold {storeNiche}</span><span className="text-[10px] text-gray-400">Low Competition</span></div><span className="text-xs text-green-500 font-black">+112%</span></li>
+                                <li className="flex justify-between items-center group/item"><div className="flex flex-col"><span className="text-sm font-bold text-gray-700 dark:text-gray-300">3. Personalized {storeNiche} Gift</span><span className="text-[10px] text-gray-400">Rising Trend</span></div><span className="text-xs text-green-500 font-black">+89%</span></li>
+                                <li className="flex justify-between items-center group/item"><div className="flex flex-col"><span className="text-sm font-bold text-gray-700 dark:text-gray-300">4. Minimalist Bridal Set</span><span className="text-[10px] text-gray-400">Seasonal Spike</span></div><span className="text-xs text-green-500 font-black">+74%</span></li>
+                            </ul>
+                        )}
+                    </div>
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <MetricCard icon={Package} title={t('metric_total_products')} value={!isInitialLoading ? String(products.length) : '...'} change="" bgColor="bg-white dark:bg-gray-800" iconColor="text-blue-500"/>
+                <MetricCard icon={TrendingUp} title={t('metric_avg_seo_score')} value={!isInitialLoading ? avgSeoScoreDisplay + "%" : '...'} change="" bgColor="bg-white dark:bg-gray-800" iconColor="text-green-500"/>
+                <MetricCard icon={DollarSign} title={t('metric_total_revenue')} value={salesData ? salesData.total_revenue.toFixed(2) + ' ' + salesData.currency : '...'} change="Overall" bgColor="bg-white dark:bg-gray-800" iconColor="text-indigo-500"/>
+                <MetricCard icon={Zap} title={t('metric_ai_optimizations')} value={!isInitialLoading ? String(optimizationsToday) : '...'} change={t('today')} bgColor="bg-white dark:bg-gray-800" iconColor="text-[#F1641E]"/>
+            </div>
+
+            {/* Product Thumbnail Strip */}
+            {!isInitialLoading && products.length > 0 && (
+                <div className="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-card border border-gray-100 dark:border-gray-700 animate-fade-in">
+                    <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-sm font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                            <ImageIcon className="w-4 h-4 text-[#F1641E]" />
+                            {t('dash_live_gallery')}
+                        </h3>
+                        <span className="text-[10px] text-gray-400 font-medium">{t('dash_syncing_assets', { count: products.length })}</span>
+                    </div>
+                    <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-hide">
+                        {products.map((p) => (
+                            <div key={p.id} className="flex-shrink-0 w-24 h-24 rounded-2xl overflow-hidden border border-gray-100 dark:border-gray-700 group relative cursor-pointer active:scale-95 transition-all">
+                                <img src={p.imageUrl} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" alt={p.title} />
+                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                    <span className="text-[8px] text-white font-bold px-1.5 py-0.5 bg-[#F1641E] rounded">SEO {p.seoScore}%</span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+export default DashboardPage;

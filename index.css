@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  @apply bg-white dark:bg-gray-950;
+}
+
+/* Optional custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #475569;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+@layer components {
+  .input-field {
+    @apply bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-xl focus:ring-[#F1641E] focus:border-[#F1641E] block w-full p-3 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-[#F1641E] dark:focus:border-[#F1641E] transition-all outline-none;
+  }
+  
+  .btn-primary {
+    @apply px-6 py-3 bg-[#F1641E] text-white rounded-xl font-bold hover:bg-[#D95A1B] shadow-lg shadow-[#F1641E]/20 transition-all active:scale-95 disabled:opacity-50 disabled:pointer-events-none;
+  }
+  
+  .btn-secondary {
+    @apply px-6 py-3 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-xl font-bold hover:bg-gray-50 dark:hover:bg-gray-700 transition-all active:scale-95 disabled:opacity-50;
+  }
+}
